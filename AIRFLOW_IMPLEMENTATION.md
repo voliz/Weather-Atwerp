@@ -16,6 +16,12 @@ Toegevoegde services:
 - **airflow-webserver**: Web UI voor DAG visualisatie en monitoring (port 8080)
 - **airflow-scheduler**: Task scheduler voor DAG execution
 
+**Custom Airflow Image:**
+- **Bestand:** `airflow/Dockerfile`
+- Extends `apache/airflow:2.8.1-python3.11`
+- Installeert additional dependencies: kaggle, pandas, psycopg2-binary
+- **Bestand:** `airflow/requirements.txt` - lijst van Python packages
+
 **Shared volumes:**
 - `./airflow/dags` - DAG definitie bestanden
 - `./airflow/logs` - Task execution logs
@@ -170,14 +176,16 @@ update_pipeline_metadata
 
 ```
 airflow/
+├── Dockerfile                    (custom Airflow image definitie)
+├── requirements.txt              (Python dependencies)
 ├── dags/
-│   ├── .airflowignore
-│   ├── weather_pipeline_dag.py
+│   ├── .airflowignore           (patterns voor files om te negeren)
+│   ├── weather_pipeline_dag.py  (hoofdpipeline DAG)
 │   └── transformations/
 │       ├── __init__.py
-│       └── weather_transform.py
-├── logs/          (gegenereerd bij runtime)
-└── plugins/       (leeg, reserved voor custom plugins)
+│       └── weather_transform.py (data parsing functies)
+├── logs/                         (gegenereerd bij runtime)
+└── plugins/                      (leeg, reserved voor custom plugins)
 ```
 
 ### 7. Documentation Updates
@@ -395,6 +403,12 @@ Data transformatie in Airflow DAG in plaats van API laag omdat:
 - Review scheduler logs: `docker compose logs airflow-scheduler`
 - Validate Python syntax in DAG file
 - Verify all imports zijn beschikbaar in Airflow container
+
+**ModuleNotFoundError voor kaggle/pandas/psycopg2:**
+- Verify custom Airflow image wordt gebouwd (niet base image)
+- Check `airflow/Dockerfile` en `airflow/requirements.txt` aanwezig zijn
+- Rebuild containers: `docker compose down && docker compose up --build`
+- Verify packages geïnstalleerd: `docker exec airflow-scheduler pip list`
 
 ### Task Failures
 

@@ -1,19 +1,19 @@
 # Ignore test files
-*_test.py
-test_*.py
+.*_test\.py
+test_.*\.py
 
 # Ignore Python cache
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+.*\.pyc
+.*\.pyo
+.*\.pyd
 
 # Ignore IDE files
-.vscode/
-.idea/
-*.swp
-*.swo
+\.vscode/
+\.idea/
+.*\.swp
+.*\.swo
 
 # Ignore documentation
-*.md
-README*
+.*\.md
+README.*
