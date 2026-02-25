@@ -1,153 +1,259 @@
-# Clean Architecture Uitleg - Weather Raw Data API
+# Clean Architecture Uitleg - Weather Data API met Apache Airflow
 
 ## Inhoudsopgave
 1. [Project Overview & Data Pipeline](#project-overview--data-pipeline)
-2. [Wat is Clean Architecture?](#wat-is-clean-architecture)
-3. [De 4 Lagen in dit Project](#de-4-lagen-in-dit-project)
-4. [Data Flow: Van HTTP Request naar Database](#data-flow-van-http-request-naar-database)
-5. [Laag voor Laag Uitleg](#laag-voor-laag-uitleg)
-6. [Dependency Flow](#dependency-flow)
-7. [Waarom deze Architectuur?](#waarom-deze-architectuur)
-8. [Code Voorbeelden](#code-voorbeelden)
+2. [Apache Airflow Orchestration](#apache-airflow-orchestration)
+3. [Wat is Clean Architecture?](#wat-is-clean-architecture)
+4. [De 4 Lagen in dit Project](#de-4-lagen-in-dit-project)
+5. [Data Flow: Van HTTP Request naar Database](#data-flow-van-http-request-naar-database)
+6. [Laag voor Laag Uitleg](#laag-voor-laag-uitleg)
+7. [Dependency Flow](#dependency-flow)
+8. [Waarom deze Architectuur?](#waarom-deze-architectuur)
+9. [Code Voorbeelden](#code-voorbeelden)
 
 ---
 
 ## Project Overview & Data Pipeline
 
-### Volledige Architectuur
+### Volledige Architectuur (met Airflow)
 
-Dit project bestaat uit **4 Docker containers** die samen een complete data engineering pipeline vormen:
+Dit project bestaat uit **Apache Airflow orchestratie** met **Docker containers** die samen een complete data engineering pipeline vormen:
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     DOCKER COMPOSE                           │
-├─────────────────────────────────────────────────────────────┤
-│                                                              │
-│  ┌──────────────┐      ┌──────────────┐      ┌──────────┐  │
-│  │   DOWNLOAD   │─────▶│    INGEST    │─────▶│   API    │  │
-│  │  Container   │      │  Container   │      │Container │  │
-│  └──────┬───────┘      └──────┬───────┘      └────┬─────┘  │
-│         │                     │                    │        │
-│         ▼                     ▼                    ▼        │
-│  ┌──────────────┐      ┌──────────────┐                    │
-│  │ data/ folder │      │  POSTGRES DB │                    │
-│  │  (CSV files) │      │  raw_weather │                    │
-│  └──────────────┘      └──────────────┘                    │
-│                                                              │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                          DOCKER COMPOSE                              │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌────────────────────────────────────────────────────────┐         │
+│  │           APACHE AIRFLOW ORCHESTRATION                 │         │
+│  │  ┌──────────┐  ┌───────────┐  ┌─────────────────┐    │         │
+│  │  │Webserver │  │ Scheduler │  │ Metadata DB     │    │         │
+│  │  │(Port 8080│  │           │  │ (Postgres)      │    │         │
+│  │  └────┬─────┘  └─────┬─────┘  └─────────────────┘    │         │
+│  │       │              │                                 │         │
+│  │       └──────────────┴─────────────────┐              │         │
+│  │                                         │              │         │
+│  │                    DAG: weather_data_pipeline          │         │
+│  │                                                        │         │
+│  │   Download → Validate → Stage → Transform → QA → Meta │         │
+│  │       ↓          ↓         ↓        ↓                  │         │
+│  └───────┼──────────┼─────────┼────────┼──────────────────┘         │
+│          │          │         │        │                            │
+│          ↓          ↓         ↓        ↓                            │
+│  ┌──────────┐  ┌────────────────────────────┐  ┌──────────────┐   │
+│  │  Kaggle  │  │     POSTGRES (Weather DB)  │  │   FastAPI    │   │
+│  │  data/   │  │  - raw_weather_staging     │  │  (Port 8000) │   │
+│  │  folder  │  │  - weather_cleaned         │  │              │   │
+│  │          │  │  - pipeline_metadata       │  │  GET /weather│   │
+│  └──────────┘  └────────────────────────────┘  └──────────────┘   │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-### Container Flow & Verantwoordelijkheden
+### Belangrijkste Wijziging: Airflow Orchestration
 
-#### 1️⃣ **Download Container**
-**Bestand:** `download/download_data.py`  
-**Wanneer:** Start als eerste, voor ingest  
-**Doel:** Automatisch dataset downloaden van Kaggle
+**Voor (Oud):**
+- Separate download/ingest containers die eenmalig draaien
+- Geen retry logic, monitoring of scheduling
+- Raw text data opslag alleen
 
-**Proces:**
-```
-START
-  ↓
-Check: Bestaan CSV's al in data/?
-  ├─ Ja  → Skip download, stop container
-  └─ Nee → Download van Kaggle API
-             ↓
-      Unzip naar data/ folder
-             ↓
-      Verify: Check of CSV's aanwezig zijn
-             ↓
-      Stop container (completion)
-```
-
-**Environment vereisten:**
-- `KAGGLE_USERNAME` - Kaggle account username
-- `KAGGLE_KEY` - Kaggle API key
-- Of: kaggle.json bestand gemount
-
-**Output:** 
-- `data/weather_in_Antwerp.csv` (~133k regels)
-- `data/weather_in_Antwerp_future2.csv` (~146 regels)
+**Nu (Met Airflow):**
+- Centraal georchestreerde workflow via Airflow DAG
+- Visuele monitoring via Airflow Web UI (http://localhost:8080)
+- Data transformatie: tekst → numerieke waarden
+- Pipeline metadata tracking en data quality reports
+- Retry logic en error handling ingebouwd
+- Manual triggering via Web UI
 
 ---
 
-#### 2️⃣ **Postgres Container**
-**Image:** `postgres:16-alpine`  
-**Wanneer:** Start parallel met download  
-**Doel:** Raw data storage database
+## Apache Airflow Orchestration
 
-**Proces:**
-```
-START
-  ↓
-Initialiseer database "weather_db"
-  ↓
-Run init.sql script:
-  - CREATE TABLE raw_weather
-  - CREATE INDEXES (year, month, day, source_file)
-  ↓
-Healthcheck: pg_isready
-  ↓
-READY (andere containers kunnen connecten)
+### Wat is Apache Airflow?
+
+Apache Airflow is een **workflow orchestration platform** voor het definiëren, plannen en monitoren van data pipelines als **Directed Acyclic Graphs (DAGs)**.
+
+**Kernconcepten:**
+- **DAG**: Workflow definitie (collection of tasks)
+- **Task**: Individuele unit of work (Python function, bash command, etc.)
+- **Operator**: Template voor een task (PythonOperator, BashOperator, etc.)
+- **Executor**: Hoe tasks worden uitgevoerd (LocalExecutor in dit project)
+- **Scheduler**: Component die tasks plant en triggert
+- **Webserver**: UI voor monitoring en handmatig triggeren
+
+### Airflow in dit Project
+
+#### Services in Docker Compose
+
+**1. airflow-postgres** (Metadata Database)
+- Purpose: Opslag van Airflow's eigen state
+- Database: `airflow`
+- Niet te verwarren met weather database!
+- Bevat: DAG runs, task instances, variables, connections
+
+**2. airflow-init** (Initialization)
+- Eenmalige setup container
+- Database migratie (`airflow db migrate`)
+- Admin user aanmaken (username: admin, password: admin)
+- Folder setup voor logs/dags/plugins
+
+**3. airflow-webserver** (Web UI)
+- Port: 8080
+- Grafische interface voor:
+  - DAG overzicht en status
+  - Task graph visualisatie
+  - Log viewing
+  - Manual triggering
+  - Pipeline metrics
+
+**4. airflow-scheduler** (Task Scheduler)
+- Monitort DAGs
+- Plant tasks op basis van schedule
+- Triggert task execution
+- Tracked task state changes
+
+#### DAG Structure: `weather_data_pipeline`
+
+**Locatie**: `airflow/dags/weather_pipeline_dag.py`
+
+**Configuratie:**
+```python
+'schedule_interval': None  # Manual trigger only
+'retries': 1               # Retry failed tasks once
+'retry_delay': 5 minutes
+'executor': LocalExecutor  # Single machine execution
 ```
 
-**Schema:**
-```sql
-CREATE TABLE raw_weather (
-    id SERIAL PRIMARY KEY,
-    clock TEXT,
-    temp TEXT,               -- Raw: "11 °C"
-    weather TEXT,            -- Raw: "Mostly cloudy."
-    wind TEXT,               -- Raw: "17 km/h"
-    humidity TEXT,           -- Raw: "94%"
-    barometer TEXT,          -- Raw: "1011 mbar"
-    visibility TEXT,         -- Raw: "5 km"
-    year INTEGER,
-    month INTEGER,
-    day INTEGER,
-    source_file VARCHAR(255),
-    ingested_at TIMESTAMP
-);
+**Tasks Overzicht:**
+
 ```
+┌──────────────────────┐
+│ download_kaggle_data │  Task 1: Download CSV from Kaggle
+└──────────┬───────────┘
+           │
+           ↓
+┌──────────────────────┐
+│ validate_csv_files   │  Task 2: Validate file integrity
+└──────────┬───────────┘
+           │
+           ↓
+┌──────────────────────┐
+│ load_to_staging      │  Task 3: Raw data → staging table
+└──────────┬───────────┘
+           │
+           ↓
+┌──────────────────────┐
+│ transform_and_load   │  Task 4: Parse text → numeric → cleaned table
+└──────────┬───────────┘
+           │
+           ↓
+┌──────────────────────┐
+│generate_quality_rept │  Task 5: Data quality metrics
+└──────────┬───────────┘
+           │
+           ↓
+┌──────────────────────┐
+│update_pipeline_meta  │  Task 6: Log run metadata
+└──────────────────────┘
+```
+
+**Task Details:**
+
+| Task | Duur | Input | Output | Error Handling |
+|------|------|-------|--------|----------------|
+| download_kaggle_data | 30-60s | Kaggle API | CSV files in data/ | Retry + skip if exists |
+| validate_csv_files | <5s | CSV files | Validation report | Fail fast on missing files |
+| load_to_staging | 30-60s | CSV files | raw_weather_staging | Truncate table first |
+| transform_and_load | 2-5min | Staging table | weather_cleaned | Chunk processing (10k) |
+| generate_quality_report | 10-30s | Cleaned table | Quality metrics JSON | Continue on warnings |
+| update_pipeline_metadata | <5s | XCom from tasks | pipeline_metadata row | Log all stats |
+
+**XCom (Cross-Communication):**
+Tasks communiceren via XCom - key-value metadata store:
+- Task 1 output: `{'status': 'success', 'files_downloaded': 2}`
+- Task 6 input: Ophalen van alle vorige task outputs
+- Usage: `ti.xcom_pull(task_ids='download_kaggle_data')`
+
+### Data Transformation Module
+
+**Locatie**: `airflow/dags/transformations/weather_transform.py`
+
+**Functionaliteit:**
+
+| Functie | Input Voorbeeld | Output | Validatie |
+|---------|----------------|--------|-----------|
+| parse_temperature() | "11 °C" | 11.0 | Accept negatives (−5) |
+| parse_humidity() | "94%" | 94.0 | Range check: 0-100 |
+| parse_wind_speed() | "17 km/h" | 17.0 | "Calm" → 0.0 |
+| parse_barometer() | "1011 mbar" | 1011.0 | Range: 900-1100 |
+| parse_visibility() | "5 km" | 5.0 | Range: 0-100 |
+
+**Error Handling:**
+- Invalid format → `None` (NULL in database)
+- Out of range → `None`
+- Missing value → `None`
+- Preserves data integrity, geen crashes
+
+**Bulk Processing:**
+```python
+transform_weather_dataframe(df)
+# Transforms entire pandas DataFrame
+# Adds columns: temp_c, humidity_pct, wind_kmh, barometer_mbar, visibility_km
+```
+
+### Database Schema Changes
+
+**Nieuwe Tabellen:**
+
+1. **raw_weather_staging** - Tijdelijke opslag tijdens pipeline
+2. **weather_cleaned** - Productie tabel met numerieke waarden
+3. **pipeline_metadata** - Airflow run tracking
+
+**Migration Strategie:**
+- `raw_weather` blijft bestaan (legacy, backward compatibility)
+- API ondersteunt beide: `/weather` (cleaned) en `/raw-weather` (legacy)
+- Nieuwe pipelines werken alleen met cleaned data
+
+### Visualisatie Features
+
+**Airflow Web UI (http://localhost:8080):**
+
+1. **Graph View**
+   - Visuele DAG flow
+   - Real-time task status (grijs/geel/groen/rood)
+   - Click task → zie details/logs
+
+2. **Tree View**
+   - Historische runs over tijd
+   - Pattern detection (failures, durations)
+
+3. **Gantt View**
+   - Task durations
+   - Parallellisme analyse
+   - Bottleneck identificatie
+
+4. **Task Duration** 
+   - Performance metrics per task
+   - Trends over meerdere runs
+
+5. **Code View**
+   - DAG source code
+   - Syntax highlighting
+
+6. **Task Logs**
+   - Gedetailleerde stdout/stderr
+   - Error stack traces
+   - Custom log messages
+
+**Monitoring Capabilities:**
+- Email alerts op failure (configureerbaar)
+- SLA tracking (service level agreements)
+- Task retry counts
+- Run duration statistics
 
 ---
 
-#### 3️⃣ **Ingest Container**
-**Bestand:** `ingest/load_raw_data.py`  
-**Wanneer:** Start nadat download compleet EN postgres healthy  
-**Doel:** CSV's parsen en laden in database
-
-**Dependencies:**
-```yaml
-depends_on:
-  postgres:
-    condition: service_healthy
-  download:
-    condition: service_completed_successfully
-```
-
-**Proces:**
-```
-START
-  ↓
-Wait for: Postgres healthy + Download complete
-  ↓
-Connect to database
-  ↓
-Check: Is raw_weather tabel leeg?
-  ├─ Nee → Skip ingest (data bestaat al)
-  └─ Ja  → Continue
-             ↓
-      Read CSV 1: weather_in_Antwerp.csv
-        - Parse met pandas (sep=';')
-        - Verwijder lege index kolom
-        - Voeg metadata toe (source_file, ingested_at)
-             ↓
-      Bulk insert (1000 records/batch met psycopg2)
-             ↓
-      Read CSV 2: weather_in_Antwerp_future2.csv
-        - Zelfde proces
-        - Handle missende kolommen (barometer/visibility)
-             ↓
+## Wat is Clean Architecture?
       Commit transaction
              ↓
       Stop container (completion)
