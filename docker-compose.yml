@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: weather-postgres
+    environment:
+      POSTGRES_DB: weather_db
+      POSTGRES_USER: weather_user
+      POSTGRES_PASSWORD: weather_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U weather_user -d weather_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  download:
+    build:
+      context: ./download
+      dockerfile: Dockerfile
+    container_name: weather-download
+    environment:
+      KAGGLE_USERNAME: ${KAGGLE_USERNAME}
+      KAGGLE_KEY: ${KAGGLE_KEY}
+    volumes:
+      - ./data:/app/data
+      - ${KAGGLE_CONFIG_DIR:-./kaggle}:/root/.kaggle:ro
+
+  ingest:
+    build:
+      context: ./ingest
+      dockerfile: Dockerfile
+    container_name: weather-ingest
+    depends_on:
+      postgres:
+        condition: service_healthy
+      download:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: weather_db
+      DB_USER: weather_user
+      DB_PASSWORD: weather_pass
+    volumes:
+      - ./data:/app/data:ro
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: weather-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ingest:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: weather_db
+      DB_USER: weather_user
+      DB_PASSWORD: weather_pass
+    ports:
+      - "8000:8000"
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  postgres_data:
